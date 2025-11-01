@@ -1,0 +1,385 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.38.33.27573",
+      "templateHash": "9126517405496057074"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "baseName": {
+      "type": "string",
+      "defaultValue": "contosoretail"
+    },
+    "sbSku": {
+      "type": "string",
+      "defaultValue": "Standard"
+    }
+  },
+  "variables": {
+    "kvName": "[format('{0}kv', parameters('baseName'))]",
+    "saName": "[toLower(format('{0}sa{1}', parameters('baseName'), uniqueString(resourceGroup().id)))]",
+    "egName": "[format('{0}-eg', parameters('baseName'))]",
+    "ehNsName": "[format('{0}-ehns', parameters('baseName'))]",
+    "ehName": "retail-telemetry",
+    "sbNsName": "[format('{0}-sbns', parameters('baseName'))]",
+    "sbQueueName": "order-processing",
+    "sbTopicName": "order-events",
+    "highValueSubName": "high-value",
+    "appInsightsName": "[format('{0}-appi', parameters('baseName'))]",
+    "planName": "[format('{0}-plan', parameters('baseName'))]",
+    "funcEventsName": "[format('{0}-func-events', parameters('baseName'))]",
+    "funcProcessName": "[format('{0}-func-process', parameters('baseName'))]",
+    "storageCheckpointsContainer": "eh-checkpoints"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-02-01",
+      "name": "[variables('kvName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "tenantId": "[subscription().tenantId]",
+        "enabledForTemplateDeployment": true,
+        "accessPolicies": [],
+        "enableRbacAuthorization": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('saName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2"
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}', variables('saName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('saName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}/{2}', variables('saName'), 'default', variables('storageCheckpointsContainer'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('saName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.EventGrid/topics",
+      "apiVersion": "2023-12-15-preview",
+      "name": "[variables('egName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Basic"
+      },
+      "properties": {
+        "inputSchema": "CloudEventSchemaV1_0",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces",
+      "apiVersion": "2023-01-01-preview",
+      "name": "[variables('ehNsName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Standard"
+      }
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces/eventhubs",
+      "apiVersion": "2023-01-01-preview",
+      "name": "[format('{0}/{1}', variables('ehNsName'), variables('ehName'))]",
+      "properties": {
+        "messageRetentionInDays": 3,
+        "partitionCount": 4
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.EventHub/namespaces', variables('ehNsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces/eventhubs/authorizationRules",
+      "apiVersion": "2021-11-01",
+      "name": "[format('{0}/{1}/{2}', variables('ehNsName'), variables('ehName'), 'send')]",
+      "properties": {
+        "rights": [
+          "Send"
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.EventHub/namespaces/eventhubs', variables('ehNsName'), variables('ehName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces/eventhubs/authorizationRules",
+      "apiVersion": "2021-11-01",
+      "name": "[format('{0}/{1}/{2}', variables('ehNsName'), variables('ehName'), 'listen')]",
+      "properties": {
+        "rights": [
+          "Listen"
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.EventHub/namespaces/eventhubs', variables('ehNsName'), variables('ehName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[variables('sbNsName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "[parameters('sbSku')]",
+        "tier": "[parameters('sbSku')]"
+      }
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/queues",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[format('{0}/{1}', variables('sbNsName'), variables('sbQueueName'))]",
+      "properties": {
+        "requiresDuplicateDetection": true,
+        "duplicateDetectionHistoryTimeWindow": "PT10M",
+        "enablePartitioning": false,
+        "enableBatchedOperations": true,
+        "deadLetteringOnMessageExpiration": true,
+        "lockDuration": "PT1M",
+        "maxDeliveryCount": 10,
+        "requiresSession": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/topics",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[format('{0}/{1}', variables('sbNsName'), variables('sbTopicName'))]",
+      "properties": {
+        "enableBatchedOperations": true,
+        "requiresDuplicateDetection": true,
+        "duplicateDetectionHistoryTimeWindow": "PT10M",
+        "supportOrdering": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/topics/subscriptions",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('sbNsName'), variables('sbTopicName'), variables('highValueSubName'))]",
+      "properties": {
+        "maxDeliveryCount": 10,
+        "deadLetteringOnMessageExpiration": true,
+        "lockDuration": "PT1M"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces/topics', variables('sbNsName'), variables('sbTopicName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/topics/subscriptions/rules",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('sbNsName'), variables('sbTopicName'), variables('highValueSubName'), 'HighAmountFilter')]",
+      "properties": {
+        "filterType": "SqlFilter",
+        "sqlFilter": {
+          "sqlExpression": "Amount >= 1000",
+          "compatibilityLevel": 20,
+          "requiresPreprocessing": false
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces/topics/subscriptions', variables('sbNsName'), variables('sbTopicName'), variables('highValueSubName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web"
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('planName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Y1",
+        "tier": "Dynamic"
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('funcEventsName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey]"
+            },
+            {
+              "name": "EVENTGRID_TOPIC_ENDPOINT",
+              "value": "[reference(resourceId('Microsoft.EventGrid/topics', variables('egName')), '2023-12-15-preview').endpoint]"
+            },
+            {
+              "name": "ORDER_QUEUE",
+              "value": "[variables('sbQueueName')]"
+            },
+            {
+              "name": "ORDER_TOPIC",
+              "value": "[variables('sbTopicName')]"
+            },
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('saName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('saName')), '2023-01-01').keys[0].value)]"
+            }
+          ],
+          "functionsRuntimeScaleMonitoringEnabled": true,
+          "http20Enabled": true
+        },
+        "httpsOnly": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.EventGrid/topics', variables('egName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('saName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('funcProcessName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey]"
+            },
+            {
+              "name": "ORDER_QUEUE",
+              "value": "[variables('sbQueueName')]"
+            },
+            {
+              "name": "ORDER_TOPIC",
+              "value": "[variables('sbTopicName')]"
+            },
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('saName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('saName')), '2023-01-01').keys[0].value)]"
+            }
+          ],
+          "functionsRuntimeScaleMonitoringEnabled": true,
+          "http20Enabled": true
+        },
+        "httpsOnly": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('saName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "kvId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+    },
+    "egEndpoint": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.EventGrid/topics', variables('egName')), '2023-12-15-preview').endpoint]"
+    },
+    "eventHubConnListen": {
+      "type": "string",
+      "value": "[listKeys(resourceId('Microsoft.EventHub/namespaces/eventhubs/authorizationRules', variables('ehNsName'), variables('ehName'), 'listen'), '2021-11-01').primaryConnectionString]"
+    },
+    "eventHubConnSend": {
+      "type": "string",
+      "value": "[listKeys(resourceId('Microsoft.EventHub/namespaces/eventhubs/authorizationRules', variables('ehNsName'), variables('ehName'), 'send'), '2021-11-01').primaryConnectionString]"
+    },
+    "serviceBusConn": {
+      "type": "string",
+      "value": "[listKeys(resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', variables('sbNsName'), 'RootManageSharedAccessKey'), '2022-10-01-preview').primaryConnectionString]"
+    },
+    "storageConn": {
+      "type": "string",
+      "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('saName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('saName')), '2023-01-01').keys[0].value)]"
+    },
+    "funcEventsName": {
+      "type": "string",
+      "value": "[variables('funcEventsName')]"
+    },
+    "funcProcessName": {
+      "type": "string",
+      "value": "[variables('funcProcessName')]"
+    },
+    "eventHubFqns": {
+      "type": "string",
+      "value": "[format('{0}.servicebus.windows.net', variables('ehNsName'))]"
+    },
+    "serviceBusFqns": {
+      "type": "string",
+      "value": "[format('{0}.servicebus.windows.net', variables('sbNsName'))]"
+    },
+    "queueName": {
+      "type": "string",
+      "value": "[variables('sbQueueName')]"
+    },
+    "topicName": {
+      "type": "string",
+      "value": "[variables('sbTopicName')]"
+    },
+    "highValueSub": {
+      "type": "string",
+      "value": "[variables('highValueSubName')]"
+    },
+    "checkpointContainer": {
+      "type": "string",
+      "value": "[variables('storageCheckpointsContainer')]"
+    }
+  }
+}

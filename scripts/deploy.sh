@@ -20,10 +20,30 @@ KVNAME=$(az resource show --ids "$KVID" --query name -o tsv)
 FUNC_EVENTS=$(jq -r .funcEventsName /tmp/contoso-outputs.json)
 FUNC_PROCESS=$(jq -r .funcProcessName /tmp/contoso-outputs.json)
 
+# ---- hardening: wait for managed identities to materialize ----
+wait_for_mi() {
+  local app_name="$1"
+  local pid=""
+  for i in {1..20}; do
+    pid=$(az webapp identity show -g "$RG" -n "$app_name" --query principalId -o tsv || true)
+    if [[ -n "$pid" && "$pid" != "null" ]]; then
+      echo "$pid"
+      return 0
+    fi
+    sleep 3
+  done
+  echo "ERROR: principalId for $app_name not available after waiting" >&2
+  return 1
+}
+
+echo ">> Resolving Function App identities"
+FUNC_EVENTS_PID=$(wait_for_mi "$FUNC_EVENTS")
+FUNC_PROCESS_PID=$(wait_for_mi "$FUNC_PROCESS")
+
 echo ">> Granting Key Vault Secrets User to Function identities"
 for APP in "$FUNC_EVENTS" "$FUNC_PROCESS"; do
   PRINCIPAL_ID=$(az webapp identity show -g "$RG" -n "$APP" --query principalId -o tsv)
-  az role assignment create --assignee-principal-type ServicePrincipal --assignee "$PRINCIPAL_ID" --scope "$KVID" --role "Key Vault Secrets User" >/dev/null
+  az role assignment create  --assignee-object-id "$PRINCIPAL_ID" --assignee-principal-type ServicePrincipal --assignee "$PRINCIPAL_ID" --scope "$KVID" --role "Key Vault Secrets User" >/dev/null
 done
 
 echo ">> Storing connection strings into Key Vault"

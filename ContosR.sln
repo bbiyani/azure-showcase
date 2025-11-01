@@ -18,6 +18,12 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "infra", "infra", "{02EA681E
 		infra\main.bicep = infra\main.bicep
 	EndProjectSection
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "scripts", "scripts", "{5C23AA33-E2E0-46BA-857E-85D722BF8E73}"
+	ProjectSection(SolutionItems) = preProject
+		scripts\deploy.sh = scripts\deploy.sh
+		scripts\deploy.ps1 = scripts\deploy.ps1
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU

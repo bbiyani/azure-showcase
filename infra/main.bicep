@@ -1,9 +1,8 @@
-
 param location string = resourceGroup().location
-param baseName string = 'contosoretail'
+param baseName string = 'contoso'
 param sbSku string = 'Standard'
 
-var kvName = '${baseName}kv'
+var kvName = toLower('${baseName}kv${uniqueString(resourceGroup().id)}')
 var saName = toLower('${baseName}sa${uniqueString(resourceGroup().id)}')
 var egName = '${baseName}-eg'
 var ehNsName = '${baseName}-ehns'
@@ -18,19 +17,24 @@ var funcEventsName = '${baseName}-func-events'
 var funcProcessName = '${baseName}-func-process'
 var storageCheckpointsContainer = 'eh-checkpoints'
 
+// -------- Key Vault --------
 resource kv 'Microsoft.KeyVault/vaults@2023-02-01' = {
   name: kvName
   location: location
   properties: {
-    sku: { family: 'A'; name: 'standard' }
+    sku: {
+      family: 'A'
+      name: 'standard'
+    }
     tenantId: subscription().tenantId
-    enableSoftDelete: true
+    // enableSoftDelete removed: always-on in this API version
     enabledForTemplateDeployment: true
     accessPolicies: []
     enableRbacAuthorization: true
   }
 }
 
+// -------- Storage --------
 resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: saName
   location: location
@@ -39,14 +43,23 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
 }
 
 resource blob 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
-  name: '${sa.name}/default'
+  name: 'default'
+  parent: sa
 }
 
 resource blobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
-  name: '${sa.name}/default/${storageCheckpointsContainer}'
-  properties: { publicAccess: 'None' }
+  name: storageCheckpointsContainer
+  parent: blob
+  properties: {
+    publicAccess: 'None'
+  }
 }
 
+var storageKey = listKeys(sa.id, '2023-01-01').keys[0].value
+var storageConn = 'DefaultEndpointsProtocol=https;AccountName=${sa.name};AccountKey=${storageKey};EndpointSuffix=core.windows.net'
+
+
+// -------- Event Grid --------
 resource egTopic 'Microsoft.EventGrid/topics@2023-12-15-preview' = {
   name: egName
   location: location
@@ -57,6 +70,7 @@ resource egTopic 'Microsoft.EventGrid/topics@2023-12-15-preview' = {
   }
 }
 
+// -------- Event Hubs --------
 resource ehNs 'Microsoft.EventHub/namespaces@2023-01-01-preview' = {
   name: ehNsName
   location: location
@@ -64,7 +78,8 @@ resource ehNs 'Microsoft.EventHub/namespaces@2023-01-01-preview' = {
 }
 
 resource eventHub 'Microsoft.EventHub/namespaces/eventhubs@2023-01-01-preview' = {
-  name: '${ehNs.name}/${ehName}'
+  name: ehName
+  parent: ehNs
   properties: {
     messageRetentionInDays: 3
     partitionCount: 4
@@ -72,15 +87,22 @@ resource eventHub 'Microsoft.EventHub/namespaces/eventhubs@2023-01-01-preview' =
 }
 
 resource ehAuthSend 'Microsoft.EventHub/namespaces/eventhubs/authorizationRules@2021-11-01' = {
-  name: '${ehNs.name}/${ehName}/send'
-  properties: { rights: [ 'Send' ] }
+  name: 'send'
+  parent: eventHub
+  properties: {
+    rights: [ 'Send' ]
+  }
 }
 
 resource ehAuthListen 'Microsoft.EventHub/namespaces/eventhubs/authorizationRules@2021-11-01' = {
-  name: '${ehNs.name}/${ehName}/listen'
-  properties: { rights: [ 'Listen' ] }
+  name: 'listen'
+  parent: eventHub
+  properties: {
+    rights: [ 'Listen' ]
+  }
 }
 
+// -------- Service Bus --------
 resource sbNs 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
   name: sbNsName
   location: location
@@ -88,7 +110,8 @@ resource sbNs 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
 }
 
 resource sbQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
-  name: '${sbNs.name}/${sbQueueName}'
+  name: sbQueueName
+  parent: sbNs
   properties: {
     requiresDuplicateDetection: true
     duplicateDetectionHistoryTimeWindow: 'PT10M'
@@ -102,7 +125,8 @@ resource sbQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
 }
 
 resource sbTopic 'Microsoft.ServiceBus/namespaces/topics@2022-10-01-preview' = {
-  name: '${sbNs.name}/${sbTopicName}'
+  name: sbTopicName
+  parent: sbNs
   properties: {
     enableBatchedOperations: true
     requiresDuplicateDetection: true
@@ -112,7 +136,8 @@ resource sbTopic 'Microsoft.ServiceBus/namespaces/topics@2022-10-01-preview' = {
 }
 
 resource sbSub 'Microsoft.ServiceBus/namespaces/topics/subscriptions@2022-10-01-preview' = {
-  name: '${sbNs.name}/${sbTopicName}/${highValueSubName}'
+  name: highValueSubName
+  parent: sbTopic
   properties: {
     maxDeliveryCount: 10
     deadLetteringOnMessageExpiration: true
@@ -121,7 +146,8 @@ resource sbSub 'Microsoft.ServiceBus/namespaces/topics/subscriptions@2022-10-01-
 }
 
 resource sbRule 'Microsoft.ServiceBus/namespaces/topics/subscriptions/rules@2022-10-01-preview' = {
-  name: '${sbNs.name}/${sbTopicName}/${highValueSubName}/HighAmountFilter'
+  name: 'HighAmountFilter'
+  parent: sbSub
   properties: {
     filterType: 'SqlFilter'
     sqlFilter: {
@@ -129,26 +155,33 @@ resource sbRule 'Microsoft.ServiceBus/namespaces/topics/subscriptions/rules@2022
       compatibilityLevel: 20
       requiresPreprocessing: false
     }
-    action: {
-      // optional: add or transform props
-    }
+    // action omitted (optional)
   }
-  dependsOn: [ sbSub ]
 }
 
+resource sbRoot 'Microsoft.ServiceBus/namespaces/authorizationRules@2022-10-01-preview' existing = {
+  name: 'RootManageSharedAccessKey'
+  parent: sbNs
+}
+
+// -------- App Insights --------
 resource appi 'Microsoft.Insights/components@2020-02-02' = {
   name: appInsightsName
   location: location
   kind: 'web'
-  properties: { Application_Type: 'web' }
+  properties: {
+    Application_Type: 'web'
+  }
 }
 
+// -------- App Service Plan (Consumption) --------
 resource plan 'Microsoft.Web/serverfarms@2022-09-01' = {
   name: planName
   location: location
-  sku: { name: 'Y1'; tier: 'Dynamic' }
+  sku: { name: 'Y1', tier: 'Dynamic' }
 }
 
+// -------- Function Apps --------
 resource funcEvents 'Microsoft.Web/sites@2022-09-01' = {
   name: funcEventsName
   location: location
@@ -158,12 +191,28 @@ resource funcEvents 'Microsoft.Web/sites@2022-09-01' = {
     serverFarmId: plan.id
     siteConfig: {
       appSettings: [
-        { name: 'APPINSIGHTS_INSTRUMENTATIONKEY'; value: appi.properties.InstrumentationKey }
-        { name: 'EVENTGRID_TOPIC_ENDPOINT'; value: egTopic.properties.endpoint }
-        { name: 'ORDER_QUEUE'; value: sbQueueName }
-        { name: 'ORDER_TOPIC'; value: sbTopicName }
+        {
+          name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
+          value: appi.properties.InstrumentationKey
+        }
+        {
+          name: 'EVENTGRID_TOPIC_ENDPOINT'
+          value: egTopic.properties.endpoint
+        }
+        {
+          name: 'ORDER_QUEUE'
+          value: sbQueueName
+        }
+        {
+          name: 'ORDER_TOPIC'
+          value: sbTopicName
+        }
+        {
+          name: 'AzureWebJobsStorage'
+          value: storageConn
+        }
       ]
-      functionsRuntimeScaleMonitoringEnabled: true
+      functionsRuntimeScaleMonitoringEnabled: false
       http20Enabled: true
     }
     httpsOnly: true
@@ -179,24 +228,40 @@ resource funcProcess 'Microsoft.Web/sites@2022-09-01' = {
     serverFarmId: plan.id
     siteConfig: {
       appSettings: [
-        { name: 'APPINSIGHTS_INSTRUMENTATIONKEY'; value: appi.properties.InstrumentationKey }
-        { name: 'ORDER_QUEUE'; value: sbQueueName }
-        { name: 'ORDER_TOPIC'; value: sbTopicName }
+        {
+          name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
+          value: appi.properties.InstrumentationKey
+        }
+        {
+          name: 'ORDER_QUEUE'
+          value: sbQueueName
+        }
+        {
+          name: 'ORDER_TOPIC'
+          value: sbTopicName
+        }
+        {
+          name: 'AzureWebJobsStorage'
+          value: storageConn
+        }
       ]
-      functionsRuntimeScaleMonitoringEnabled: true
+      functionsRuntimeScaleMonitoringEnabled: false
       http20Enabled: true
     }
     httpsOnly: true
   }
 }
 
-// Outputs
+// -------- Outputs --------
 output kvId string = kv.id
 output egEndpoint string = egTopic.properties.endpoint
+// NOTE: these outputs expose secrets. Keep for demo or remove for production.
+
 output eventHubConnListen string = listKeys(ehAuthListen.id, '2021-11-01').primaryConnectionString
-output eventHubConnSend string = listKeys(ehAuthSend.id, '2021-11-01').primaryConnectionString
-output serviceBusConn string = listKeys(resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', sbNsName, 'RootManageSharedAccessKey'), '2021-11-01').primaryConnectionString
-output storageConn string = 'DefaultEndpointsProtocol=https;AccountName=${sa.name};AccountKey=${listKeys(sa.id, '2023-01-01').keys[0].value};EndpointSuffix=core.windows.net'
+output eventHubConnSend   string = listKeys(ehAuthSend.id,   '2021-11-01').primaryConnectionString
+output serviceBusConn     string = listKeys(sbRoot.id,       '2022-10-01-preview').primaryConnectionString
+output storageConn        string = storageConn
+
 output funcEventsName string = funcEvents.name
 output funcProcessName string = funcProcess.name
 output eventHubFqns string = '${ehNs.name}.servicebus.windows.net'
